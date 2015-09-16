@@ -85,61 +85,45 @@ void mqttCallback (const MQTT::Publish& pub)
   {
     
     int read;
-    while (read = pub.payload_stream()->read(buf, BUFFER_SIZE)) {
+    while (read = pub.payload_stream()->read(buf, BUFFER_SIZE))
+    {
       Serial.write(buf, read);
     }
     pub.payload_stream()->stop();
     Serial.println("");
-  } else
-    Serial.println(pub.payload_string());
-
-  if (0 == strcmp (pub.topic ().c_str (), MQTT_TOPIC_SET_COLOR))
-  {
-    char in_buffer [12];
-    pub.payload_string ().toCharArray (in_buffer, 12);
-    in_buffer [3] = 0;
-    in_buffer [7] = 0;
-    in_buffer [11] = 0;
-
-    LPD6803::color_t color;
-    color.r = atoi (&in_buffer [0]) >> 3;
-    color.g = atoi (&in_buffer [4]) >> 3;
-    color.b = atoi (&in_buffer [8]) >> 3;
-    
-    Serial.print (color.r, DEC);
-    Serial.print (", ");
-    Serial.print (color.g, DEC);
-    Serial.print (", ");
-    Serial.println (color.b, DEC);
-
-    for (int i=0; i < strip.getNrPixels (); ++i)
-    {
-        strip.setPixelColor (i, color);
-    }
-    strip.show ();
   }
-  else if (0 == strcmp (pub.topic ().c_str (), MQTT_TOPIC_SET_PIXEL_COLOR))
+  else
   {
-    Serial.print ("MQTT_TOPIC_SET_PIXEL_COLOR ... ");
+    Serial.println(pub.payload_string());
+  }
+
+  if (0 == strcmp (pub.topic ().c_str (), MQTT_TOPIC_SET_COLORS))
+  {
+    Serial.print ("MQTT_TOPIC_SET_COLORS ... ");
     
     const char* p_digits = pub.payload_string ().c_str ();
+    uint16_t nr_digits = pub.payload_string ().length ();
     LPD6803::color_t color;
 
     uint16_t index = static_cast <uint16_t> (hex2int (&(p_digits [0]), 2));
-    uint32_t color_value = hex2int (&(p_digits [2]), 6);
-    color.r = (color_value & 0xFF0000) >> 19;
-    color.g = (color_value & 0x00FF00) >> 11;
-    color.b = (color_value & 0x0000FF) >> 3;
-
-    strip.setPixelColor (index2led (index), color);
-
-    strip.show ();  
+    uint16_t repeat = static_cast <uint16_t> (hex2int (&(p_digits [2]), 2));
+  
+    for (uint16_t r = 0; (r < repeat) && (index < 64); ++r)
+    {
+      for (uint16_t i = 4; i < nr_digits; i += 6, ++index)
+      {
+        uint32_t color_value = hex2int (&(p_digits [i]), 6);
+        color.r = (color_value & 0xFF0000) >> 19;
+        color.g = (color_value & 0x00FF00) >> 11;
+        color.b = (color_value & 0x0000FF) >> 3;
+    
+        strip.setPixelColor (index2led (index), color);
+      }
+    }
+  
+    strip.show ();
 
     Serial.println ("done");
-  }
-  else if (0 == strcmp (pub.topic ().c_str (), MQTT_TOPIC_SET_COLORS))
-  {
-
   }
 }
 
@@ -162,115 +146,32 @@ void handleNotFound(){
   server.send(404, "text/plain", message);
 }
 
-void setColor()
-{
-  Serial.print ("setColor ... ");
-  
-  LPD6803::color_t color;
-  color.r = 0;
-  color.g = 0;
-  color.b = 0;
-
-  if (server.hasArg ("R"))
-  {
-    color.r = server.arg ("R").toInt () >> 3;
-  }
-  if (server.hasArg ("G"))
-  {
-    color.g = server.arg ("G").toInt () >> 3;
-  }
-  if (server.hasArg ("B"))
-  {
-    color.b = server.arg ("B").toInt () >> 3;
-  }
-
-  server.send(200, "text/plain", "");
-
-  for (int i=0; i < strip.getNrPixels (); ++i)
-  {
-      strip.setPixelColor (i, color);
-  }
-  strip.show ();
-
-  Serial.println ("done");
-}
-
-void setPixelColor()
-{
-  Serial.print ("setPixelColor ... ");
-  
-  int index = 0;
-  LPD6803::color_t color;
-  color.r = 0;
-  color.g = 0;
-  color.b = 0;
-
-  bool accept_call = true;
-  if (server.hasArg ("i"))
-  {
-     index = server.arg ("i").toInt ();
-
-     int row = index / 8;
-     int col = index % 8;
-     int odd_row = row % 2;
-
-     index = row*8 + odd_row*col + (1-odd_row)*(7-col);
-  }
-  else
-  {
-    accept_call = false;
-  }
-
-  if (server.hasArg ("R"))
-  {
-    color.r = server.arg ("R").toInt () >> 3;
-  }
-  if (server.hasArg ("G"))
-  {
-    color.g = server.arg ("G").toInt () >> 3;
-  }
-  if (server.hasArg ("B"))
-  {
-    color.b = server.arg ("B").toInt () >> 3;
-  }
-
-  if (accept_call)
-  {
-    server.send(200, "text/plain", "");
-  }
-  else
-  {
-    server.send(404, "text/plain", "i (0-based index) and R, G and B (dec, optional)");
-  }
-
-  strip.setPixelColor (index, color);
-  strip.show (index, index + 1);
-
-  Serial.println ("done");
-}
-
 void setColors ()
 {
   Serial.print ("setColors ... ");
 
   if (!server.hasArg ("c"))
   {
-     server.send(404, "text/plain", "c= and then some hex color values");
+     server.send(404, "text/plain", "i= start index, c= some hex color values");
   }
 
   const char* p_digits = server.arg ("c").c_str ();
   uint16_t nr_digits = server.arg ("c").length ();
-  //int led_index;
+  uint16_t index = server.arg ("i").toInt ();
+  uint16_t repeat = server.arg ("r").toInt ();
   LPD6803::color_t color;
-  
-  for (uint16_t i = 0, index = 0; (i < nr_digits) && (index < 64); i += 6, ++index)
-  {    
-    uint32_t color_value = hex2int (&(p_digits [i]), 6);
-    color.r = (color_value & 0xFF0000) >> 19;
-    color.g = (color_value & 0x00FF00) >> 11;
-    color.b = (color_value & 0x0000FF) >> 3;
 
-    strip.setPixelColor (index2led (index), color);
+  for (uint16_t r = 0; (r < repeat) && (index < 64); ++r)
+  {
+    for (uint16_t i = 0; i < nr_digits; i += 6, ++index)
+    {
+      uint32_t color_value = hex2int (&(p_digits [i]), 6);
+      color.r = (color_value & 0xFF0000) >> 19;
+      color.g = (color_value & 0x00FF00) >> 11;
+      color.b = (color_value & 0x0000FF) >> 3;
+  
+      strip.setPixelColor (index2led (index), color);
+    }
   }
 
   server.send(200, "text/plain", "");
@@ -308,8 +209,6 @@ void setup ()
       if (mqttclient.connect("ESP8266Client"))
       {
         mqttclient.set_callback(mqttCallback);
-        mqttclient.subscribe (MQTT_TOPIC_SET_COLOR);
-        mqttclient.subscribe (MQTT_TOPIC_SET_PIXEL_COLOR);
         mqttclient.subscribe (MQTT_TOPIC_SET_COLORS);
 
         Serial.println ("MQTT connected");
@@ -334,9 +233,7 @@ void setup ()
 
   // configure server
   server.on("/", handleRoot);
-  server.on("/setColor", setColor);
   server.on("/setColors", setColors);
-  server.on("/setPixelColor", setPixelColor);
   server.onNotFound(handleNotFound);
   
   //start server
