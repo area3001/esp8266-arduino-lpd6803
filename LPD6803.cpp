@@ -1,4 +1,3 @@
-#include <Ticker.h>
 #include "LPD6803.h"
 
 /*****************************************************************************
@@ -47,7 +46,6 @@ static uint16_t    s_end_pixel_index;   // flag to indicate that the colors need
 static uint16_t    swapAsap = 0;   // flag to indicate that the colors need an update asap
 
 // members
-static Ticker s_ticker;
 static ETSTimer* s_p_timer = 0x0;
 
 //Interrupt routine.
@@ -181,11 +179,9 @@ void LPD6803::begin ()
   pinMode (s_clock_pin, OUTPUT);
   
   // start timer
-  //s_p_timer = new ETSTimer;
-  
-  //os_timer_setfn(s_p_timer, reinterpret_cast<ETSTimerFunc*>(LedOut), 0x0);
-    //ets_timer_arm_new (s_p_timer, 1, 1, 0);
-  //s_ticker.attach_ms (1, LedOut);
+  timer1_attachInterrupt (LedOut);
+  timer1_write (800);
+  timer1_enable (TIM_DIV1, TIM_EDGE, TIM_LOOP);
 }
 
 //---

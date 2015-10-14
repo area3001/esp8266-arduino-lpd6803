@@ -3,43 +3,32 @@
 #include <ESP8266WebServer.h>
 #include <ESP8266mDNS.h>
 #include <LPD6803.h>
-#include <Ticker.h>
 #include <PubSubClient.h>
 
-#include "ets_sys.h"
-#include "osapi.h"
 
-#define USE_US_TIMER
+#define USE_US_TIMER // is this still needed?
 
-//wifi access point
-const char* ssid = "area3001";
-const char* password = "hackerspace";
+// ldp6803
+#define LED_COUNT 64
+#define LED_NR_COLS 8
+#define PIN_DATA  13
+#define PIN_CLOCK 14
 
-// Number of RGB LEDs in strand:
-int nLEDs = 64;
+// wifi
+#define WIFI_SSID "area3001"
+#define WIFI_PWD  "hackerspace"
 
-// Chose 2 pins for output; can be any valid output pins:
-int dataPin  = 13;
-int clockPin = 14;
-
-// ESP stuff
-MDNSResponder mdns;
-ESP8266WebServer server(80);
-
-//IPAddress mqttserver(192, 168, 1, 146);
-IPAddress mqttserver(128, 199, 61, 79);
-WiFiClient mqttwclient;
-PubSubClient mqttclient(mqttwclient, mqttserver);
-
-#define BUFFER_SIZE 100
-#define MQTT_TOPIC_SET_PIXEL_COLOR "leds/setPixelColor"
-#define MQTT_TOPIC_SET_COLOR "leds/setColor"
+// mqtt
+#define MQTT_BUFFER_SIZE      124
 #define MQTT_TOPIC_SET_COLORS "leds/setColors"
 
-// First parameter is the number of LEDs in the strand.  The LED strips
-// are 32 LEDs per meter but you can extend or cut the strip.  Next two
-// parameters are SPI data and clock pins:
-LPD6803 strip = LPD6803(nLEDs, dataPin, clockPin);
+// modules
+MDNSResponder mdns; // do we actually need this?
+ESP8266WebServer http_server(80);
+IPAddress    mqtt_server(128, 199, 61, 79);
+WiFiClient   mqtt_wclient;
+PubSubClient mqtt_client(mqtt_wclient, mqtt_server);
+LPD6803      led_strip = LPD6803(LED_COUNT, PIN_DATA, PIN_CLOCK);
 
 uint32_t hex2int (const char* i_p_string, uint16_t i_nr_digits)
 {
@@ -51,7 +40,7 @@ uint32_t hex2int (const char* i_p_string, uint16_t i_nr_digits)
     {
       digit = i_p_string [i] - 48;
     }
-    else if (64 < i_p_string [i] && 71 > i_p_string [i])
+    else if (LED_COUNT < i_p_string [i] && 71 > i_p_string [i])
     {
       digit = i_p_string [i] - 55;
     }
@@ -67,224 +56,206 @@ uint32_t hex2int (const char* i_p_string, uint16_t i_nr_digits)
 
 uint16_t index2led (uint16_t i_index)
 {
-  uint16_t row = i_index / 8;
-  uint16_t col = i_index % 8;
+  uint16_t row = i_index / LED_NR_COLS;
+  uint16_t col = i_index % LED_NR_COLS;
   uint16_t odd_row = row % 2;
   
   return row*8 + odd_row*col + (1-odd_row)*(7-col);
 }
 
-
-void mqttCallback (const MQTT::Publish& pub)
+void decodeColorString (const uint16_t& i_index_begin, const uint16_t& i_repeat_count, const char* i_p_digits, const size_t& i_nr_digits)
 {
-  uint8_t buf[BUFFER_SIZE];
-  
-  Serial.print(pub.topic());
-  Serial.print(" => ");
-  if (pub.has_stream())
+  uint16_t nr_colors = i_nr_digits / 6;
+  LPD6803::color_t color;
+  color.r = 0;
+  color.g = 0;
+  color.b = 0;
+
+  for (uint16_t i = 0, current_index = i_index_begin;
+       i < i_nr_digits;
+       i += 6, ++current_index)
   {
-    
-    int read;
-    while (read = pub.payload_stream()->read(buf, BUFFER_SIZE))
+    uint32_t color_value = hex2int (&(i_p_digits [i]), 6);
+    color.r = (color_value & 0xFF0000) >> 19;
+    color.g = (color_value & 0x00FF00) >> 11;
+    color.b = (color_value & 0x0000FF) >> 3;
+
+    for (uint16_t r = 0, index = current_index;
+         (r < i_repeat_count) && (index < LED_COUNT);
+         ++r, index += nr_colors)
     {
-      Serial.write(buf, read);
+      led_strip.setPixelColor (index2led (index), color);
     }
-    pub.payload_stream()->stop();
-    Serial.println("");
-  }
-  else
-  {
-    Serial.println(pub.payload_string());
   }
 
-  if (0 == strcmp (pub.topic ().c_str (), MQTT_TOPIC_SET_COLORS))
+  led_strip.show ();
+}
+
+void mqttCallback (const MQTT::Publish& i_pub)
+{
+  if (0 == strcmp (i_pub.topic ().c_str (), MQTT_TOPIC_SET_COLORS))
   {
     Serial.print ("MQTT_TOPIC_SET_COLORS ... ");
-    
-    const char* p_digits = pub.payload_string ().c_str ();
-    uint16_t nr_digits = pub.payload_string ().length ();
-    LPD6803::color_t color;
 
-    uint16_t index = static_cast <uint16_t> (hex2int (&(p_digits [0]), 2));
-    uint16_t repeat = static_cast <uint16_t> (hex2int (&(p_digits [2]), 2));
-  
-    for (uint16_t r = 0; (r < repeat) && (index < 64); ++r)
+    if (4 > i_pub.payload_string ().length ())
     {
-      for (uint16_t i = 4; i < nr_digits; i += 6, ++index)
-      {
-        uint32_t color_value = hex2int (&(p_digits [i]), 6);
-        color.r = (color_value & 0xFF0000) >> 19;
-        color.g = (color_value & 0x00FF00) >> 11;
-        color.b = (color_value & 0x0000FF) >> 3;
-    
-        strip.setPixelColor (index2led (index), color);
-      }
-    }
-  
-    strip.show ();
+      const char* p_digits =  i_pub.payload_string ().c_str ();
+      uint16_t index = static_cast <uint16_t> (hex2int (&(p_digits [0]), 2));
+      uint16_t repeat = static_cast <uint16_t> (hex2int (&(p_digits [2]), 2));
 
-    Serial.println ("done");
+      p_digits = &(p_digits [4]);
+      uint16_t nr_digits = i_pub.payload_string ().length () - 4;
+
+      decodeColorString (index, repeat, p_digits, nr_digits);
+
+      Serial.println ("done");
+    }
+    else
+    {
+      Serial.println ("error");
+    }   
   }
 }
 
-void handleRoot() {
-  server.send(200, "text/plain", "hello from esp8266!");
+void httpHandleRoot ()
+{
+  String message = "Hello there cutie\n\n"
+                   "Call me like this: setColors\n"
+                   "And tell me:\n"
+                   "i=display start index\n"
+                   "r=nr of repeats\n"
+                   "c=array of rgb colors in hex (min length is 6 digits)\n";
+  http_server.send (200, "text/plain", message);
 }
 
-void handleNotFound(){
+void httpHandleNotFound ()
+{
   String message = "File Not Found\n\n";
   message += "URI: ";
-  message += server.uri();
+  message += http_server.uri();
   message += "\nMethod: ";
-  message += (server.method() == HTTP_GET)?"GET":"POST";
+  message += (http_server.method() == HTTP_GET)?"GET":"POST";
   message += "\nArguments: ";
-  message += server.args();
+  message += http_server.args();
   message += "\n";
-  for (uint8_t i=0; i<server.args(); i++){
-    message += " " + server.argName(i) + ": " + server.arg(i) + "\n";
+  for (uint8_t i=0; i<http_server.args(); i++)
+  {
+    message += " " + http_server.argName(i) + ": " + http_server.arg(i) + "\n";
   }
-  server.send(404, "text/plain", message);
+  http_server.send(404, "text/plain", message);
 }
 
-void setColors ()
+void httpHandleSetColors ()
 {
   Serial.print ("setColors ... ");
 
-  if (!server.hasArg ("c"))
+  uint16_t index       = 0;
+  uint16_t repeat      = 0;
+  uint16_t nr_digits   = 0;
+  uint16_t nr_colors   = 0;
+  const char* p_digits = 0x0;
+  if (http_server.hasArg ("i"))
   {
-     server.send(404, "text/plain", "i= start index, c= some hex color values");
+    index = http_server.arg ("i").toInt ();
   }
-
-  const char* p_digits = server.arg ("c").c_str ();
-  uint16_t nr_digits = server.arg ("c").length ();
-  uint16_t index = server.arg ("i").toInt ();
-  uint16_t repeat = server.arg ("r").toInt ();
-  LPD6803::color_t color;
-
-  for (uint16_t r = 0; (r < repeat) && (index < 64); ++r)
+  if (http_server.hasArg ("r"))
   {
-    for (uint16_t i = 0; i < nr_digits; i += 6, ++index)
-    {
-      uint32_t color_value = hex2int (&(p_digits [i]), 6);
-      color.r = (color_value & 0xFF0000) >> 19;
-      color.g = (color_value & 0x00FF00) >> 11;
-      color.b = (color_value & 0x0000FF) >> 3;
+    repeat = http_server.arg ("r").toInt ();
+  }
+  if (http_server.hasArg ("c"))
+  {
+    p_digits = http_server.arg ("c").c_str ();
+    nr_digits = http_server.arg ("c").length ();
+    nr_colors = nr_digits / 6;
+  }
   
-      strip.setPixelColor (index2led (index), color);
-    }
-  }
+  decodeColorString (index, repeat, p_digits, nr_digits);
 
-  server.send(200, "text/plain", "");
-
-  strip.show ();
+  http_server.send (200, "text/plain", "");
 
   Serial.println ("done");
 }
 
+void httpHandleGetConfig ()
+{
+  Serial.print ("setColors ... ");
+
+  String message = "{\"led_count\":";
+  message += LED_COUNT;
+  message += ",\"nr_cols\":";
+  message += LED_NR_COLS;
+  message += ",\"nr_rows\":";
+  message += (LED_COUNT / LED_NR_COLS);
+  message += "}";
+  http_server.send (200, "application/json", message);
+  
+  Serial.println ("done");
+}
  
 void setup ()
 {  
-  Serial.begin(115200);
-  WiFi.begin(ssid, password);
-  Serial.println("");
+  // SERIAL
+  Serial.begin (115200);
+  Serial.println ("");
 
-  // Wait for connection
+  // WIFI
+  WiFi.begin (WIFI_SSID, WIFI_PWD);
   while (WiFi.status() != WL_CONNECTED) 
   {
-    delay(500);
-    Serial.print(".");
+    delay (500);
+    Serial.print (".");
   }
-  Serial.println("");
-  Serial.print("Connected to ");
-  Serial.println(ssid);
-  Serial.print("IP address: ");
-  Serial.println(WiFi.localIP());
+  Serial.print ("\nConnected to ");
+  Serial.println (WIFI_SSID);
+  Serial.print ("IP address: ");
+  Serial.println (WiFi.localIP());
   
-  if (mdns.begin("esp8266", WiFi.localIP())) {
-    Serial.println("MDNS responder started");
+  if (mdns.begin ("esp8266", WiFi.localIP()))
+  {
+    Serial.println ("MDNS responder started");
   }
 
-  if (!mqttclient.connected())
-  {
-      if (mqttclient.connect("ESP8266Client"))
-      {
-        mqttclient.set_callback(mqttCallback);
-        mqttclient.subscribe (MQTT_TOPIC_SET_COLORS);
-
-        Serial.println ("MQTT connected");
-      }
-      else
-      {
-        Serial.println ("MQTT connect FAIL");
-      }
-    }
-
-
-   // Start up the LED counter
-  strip.begin();
-
-  // Update the strip, to start they are all 'off'
-  strip.show();
+   // LED STRIP
+  led_strip.begin();
+  led_strip.show();
   Serial.println("LEDS initalized");
 
-  timer1_attachInterrupt (OnTimerOneInterrupt);
-  timer1_write (800);
-  timer1_enable (TIM_DIV1, TIM_EDGE, TIM_LOOP);
+  // MQTT CLIENT
+  if (!mqtt_client.connected ())
+  {
+    if (mqtt_client.connect ("ESP8266Client"))
+    {
+      mqtt_client.set_callback(mqttCallback);
+      mqtt_client.subscribe (MQTT_TOPIC_SET_COLORS);
 
-  // configure server
-  server.on("/", handleRoot);
-  server.on("/setColors", setColors);
-  server.onNotFound(handleNotFound);
-  
-  //start server
-  server.begin();
-  Serial.println("HTTP server started");
+      Serial.println ("MQTT connected");
+    }
+    else
+    {
+      Serial.println ("MQTT connect FAIL");
+    }
+  }
+
+  // HTTP SERVER
+  http_server.on ("/", httpHandleRoot);
+  http_server.on ("/setColors", httpHandleSetColors);
+  http_server.on ("/getConfig", httpHandleGetConfig);
+  http_server.onNotFound (httpHandleNotFound);
+  http_server.begin ();
+  Serial.println ("HTTP server started");
 }
 
-void loop(void)
+void loop ()
 {
-  if (strip.outputReady ())
+  if (led_strip.outputReady ())
   {
-    server.handleClient();
+    http_server.handleClient();
+    if (mqtt_client.connected())
+    {
+      mqtt_client.loop();
+    }
   }
-
-  
-  if (mqttclient.connected())
-  {
-    mqttclient.loop();
-  }
-  
+    
   delay (0);
 }
 
-void OnTimerOneInterrupt ()
-{
-  strip.update ();
-}
-
-// fill the dots with said color
-// good for testing purposes
-void colorSet(LPD6803::color_t i_color)
-{
-  
-}
-
-
-/* Helper functions */
-
-// Create a 15 bit color value from R,G,B
-unsigned int Color(byte r, byte g, byte b)
-{
-  //Take the lowest 5 bits of each value and append them end to end
-  //return( ((unsigned int)g & 0x1F )<<10 | ((unsigned int)b & 0x1F)<<5 | (unsigned int)r & 0x1F);
-  unsigned int data;
-  
-  data = g & 0x1F;
-  data <<= 5;
-  data |= b & 0x1F;
-  data <<= 5;
-  data |= r & 0x1F;
-  data |= 0x8000;
-
-  return data;
-}
