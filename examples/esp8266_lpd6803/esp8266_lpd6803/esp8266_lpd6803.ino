@@ -36,16 +36,19 @@ uint32_t hex2int (const char* i_p_string, uint16_t i_nr_digits)
   for (uint16_t i=0; i<i_nr_digits; ++i)
   {
     uint8_t digit = 0;
-    if (48 < i_p_string [i]&& 58 > i_p_string [i])
+    if (47 < i_p_string [i] && 58 > i_p_string [i])
     {
+      // '0' to '9'
       digit = i_p_string [i] - 48;
     }
-    else if (LED_COUNT < i_p_string [i] && 71 > i_p_string [i])
+    else if (64 < i_p_string [i] && 71 > i_p_string [i])
     {
+      // 'A' to 'F'
       digit = i_p_string [i] - 55;
     }
     else if (96 < i_p_string [i] && 103 > i_p_string [i])
     {
+      // 'a' to 'f'
       digit = i_p_string [i] - 87;
     }
     value = 16*value + digit;
@@ -60,7 +63,7 @@ uint16_t index2led (uint16_t i_index)
   uint16_t col = i_index % LED_NR_COLS;
   uint16_t odd_row = row % 2;
   
-  return row*8 + odd_row*col + (1-odd_row)*(7-col);
+  return row*LED_NR_COLS + odd_row*col + (1-odd_row)*(LED_NR_COLS-1-col);
 }
 
 void decodeColorString (const uint16_t& i_index_begin, const uint16_t& i_repeat_count, const char* i_p_digits, const size_t& i_nr_digits)
